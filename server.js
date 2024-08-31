@@ -7,7 +7,7 @@ app.use(fileUpload());
 const port = 3030;
 
 app.get('/', (req, res) => {
-  res.send(`
+    res.send(`
     <h2>With <code>"express"</code> npm package</h2>
     <form action="/api/upload" enctype="multipart/form-data" method="post">
     <div>
@@ -20,13 +20,17 @@ app.get('/', (req, res) => {
 });
 
 app.post('/api/upload', (req, res, next) => {
-  const image = convert_image(req.files.file.data)
+    const image = convert_image(req.files.file.data);
+    console.log(`Returned PNG Image size is ${image.byteLength}`);
 
-  res.setHeader('Content-disposition', 'attachment; filename="meme.png"');
-  res.setHeader('Content-type', 'image/png');
-    res.send(image);
-  });
+    // Convert the Uint8Array to a Node.js Buffer
+    const buffer = Buffer.from(image);
+
+    res.setHeader('Content-disposition', 'attachment; filename="meme.png"');
+    res.setHeader('Content-type', 'image/png');
+    res.send(buffer);
+});
 
 app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`)
+    console.log(`Example app listening on port ${port}`);
 })

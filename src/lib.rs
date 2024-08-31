@@ -1,8 +1,11 @@
-use js_sys::{ArrayBuffer, Uint8Array};
-use wasm_bindgen::prelude::wasm_bindgen;
+use image::codecs::png::CompressionType;
+use image::codecs::png::FilterType;
+use image::codecs::png::PngEncoder;
 use image::ImageFormat;
 use image::ImageReader;
+use js_sys::{ArrayBuffer, Uint8Array};
 use std::io::Cursor;
+use wasm_bindgen::prelude::wasm_bindgen;
 
 #[wasm_bindgen]
 extern "C" {
@@ -10,8 +13,19 @@ extern "C" {
 }
 
 #[wasm_bindgen]
-pub fn greet(name: &str) {
-    alert(&format!("Hello, {}!", name));
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
+
+// Next let's define a macro that's like `println!`, only it works for
+// `console.log`. Note that `println!` doesn't actually work on the Wasm target
+// because the standard library currently just eats all output. To get
+// `println!`-like behavior in your app you'll likely want a macro like this.
+#[macro_export]
+macro_rules! console_log {
+    // Match against any number of arguments of any type
+    ($($t:tt)*) => (log(&format_args!($($t)*).to_string()))
 }
 
 // This defines the Node.js Buffer type
@@ -35,13 +49,24 @@ pub fn convert_image(buffer: &Buffer) -> Vec<u8> {
     let bytes: Vec<u8> = Uint8Array::new_with_byte_offset_and_length(
         &buffer.buffer(),
         buffer.byte_offset(),
-        buffer.length()
-    ).to_vec();
+        buffer.length(),
+    )
+    .to_vec();
 
-    let img2 = ImageReader::new(Cursor::new(bytes)).with_guessed_format().unwrap().decode().unwrap();
+    let img = ImageReader::new(Cursor::new(&bytes))
+        .with_guessed_format()
+        .expect("Error guessing image format")
+        .decode()
+        .expect("Error decoding image");
+
+    console_log!("Incoming File Buffer length: {}", buffer.length());
+    console_log!("Buffer to u8 Bytes length: {}", bytes.len());
 
     let mut new_vec: Vec<u8> = Vec::new();
-    img2.write_to(&mut Cursor::new(&mut new_vec), ImageFormat::Png).unwrap();
+    let encoder = PngEncoder::new_with_quality(&mut new_vec, CompressionType::Best, FilterType::Adaptive);
+    img.write_with_encoder(encoder).expect("Error encoding and writing PNG Buffer");
+
+    console_log!("PNG data size: {}", new_vec.len());
 
     new_vec
 }
@@ -50,6 +75,7 @@ pub fn convert_image(buffer: &Buffer) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    #[allow(unused)]
     #[test]
     fn it_works() -> Result<(), Box<dyn std::error::Error>> {
         let img = ImageReader::open("Audrey Hepburn.jpg")?.decode()?;
@@ -59,7 +85,9 @@ mod tests {
         // img.save_with_format("test.png", ImageFormat::Png)?;
 
         let file_bytes = std::fs::read("Audrey Hepburn.jpg").unwrap();
-        let img2 = ImageReader::new(Cursor::new(file_bytes)).with_guessed_format()?.decode()?;
+        let img2 = ImageReader::new(Cursor::new(file_bytes))
+            .with_guessed_format()?
+            .decode()?;
 
         let mut bytes: Vec<u8> = Vec::new();
         img2.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)?;
