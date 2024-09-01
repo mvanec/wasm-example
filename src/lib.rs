@@ -74,6 +74,11 @@ pub fn convert_image(buffer: &Buffer) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ab_glyph::{PxScale, Font, FontRef};
+    use image::{DynamicImage, ImageResult, Rgba};
+    use imageproc::distance_transform::Norm;
+    use imageproc::drawing::draw_text_mut;
+    use imageproc::morphology::dilate_mut;
 
     #[allow(unused)]
     #[test]
@@ -85,16 +90,76 @@ mod tests {
         // img.save_with_format("test.png", ImageFormat::Png)?;
 
         let file_bytes = std::fs::read("Audrey Hepburn.jpg").unwrap();
-        let img2 = ImageReader::new(Cursor::new(file_bytes))
+        let mut image = ImageReader::new(Cursor::new(file_bytes))
             .with_guessed_format()?
             .decode()?;
 
+        // Convert to PNG
         let mut bytes: Vec<u8> = Vec::new();
-        img2.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)?;
+        image.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)?;
+
+        let image_bytes_to_write = overlay_text("WASM Test", &bytes)?;
 
         //let output = convert_image_not_wasm(&bytes);
-        std::fs::write("test.png", bytes)?;
+        std::fs::write("test.png", image_bytes_to_write)?;
         //image::save_buffer("test.png", &bytes, w, h, ct)?;
         Ok(())
     }
+
+    fn overlay_text(text: &str, img_data: &[u8]) -> ImageResult<Vec<u8>> {
+        let sb_img = image::load_from_memory(img_data).unwrap();
+
+        let mut image = sb_img.to_rgba8();
+
+        let mut overlay: DynamicImage = DynamicImage::new_luma8(image.width(), image.height());
+
+        let font_bytes: &[u8] = include_bytes!("../GothamBook.ttf") as &[u8];
+        let font = FontRef::try_from_slice(font_bytes).unwrap();
+        let scale = PxScale {
+            x: image.width() as f32 * 0.1,
+            y: image.height() as f32 * 0.1,
+        };
+
+        let x = (image.width() as f32 * 0.10) as i32;
+        let y = (image.width() as f32 * 0.10) as i32;
+
+        draw_text_mut(
+            &mut overlay,
+            Rgba([255u8, 255u8, 255u8, 255u8]),
+            x,
+            y,
+            scale,
+            &font,
+            text,
+        );
+
+        let mut image2 = overlay.to_luma8();
+        dilate_mut(&mut image2, Norm::LInf, 4u8);
+
+        for x in 0..image2.width() {
+            for y in 0..image2.height() {
+                let pixval = 255 - image2.get_pixel(x, y).0[0];
+                if pixval != 255 {
+                    let new_pix = Rgba([pixval, pixval, pixval, 255]);
+                    image.put_pixel(x, y, new_pix);
+                }
+            }
+        }
+        image2.save("test_overlay.png")?;
+
+        draw_text_mut(
+            &mut image,
+            Rgba([0u8, 128u8, 255u8, 128u8]),
+            x,
+            y,
+            scale,
+            &font,
+            text,
+        );
+
+        let mut bytes: Vec<u8> = Vec::new();
+        image.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)?;
+        Ok(bytes)
+    }
+
 }
