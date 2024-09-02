@@ -1,11 +1,16 @@
+mod error;
+mod text;
+
 use image::codecs::png::CompressionType;
 use image::codecs::png::FilterType;
 use image::codecs::png::PngEncoder;
-use image::ImageFormat;
 use image::ImageReader;
 use js_sys::{ArrayBuffer, Uint8Array};
 use std::io::Cursor;
 use wasm_bindgen::prelude::wasm_bindgen;
+
+#[allow(unused)]
+use crate::error::ConversionError;
 
 #[wasm_bindgen]
 extern "C" {
@@ -74,11 +79,138 @@ pub fn convert_image(buffer: &Buffer) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ab_glyph::{PxScale, Font, FontRef};
-    use image::{DynamicImage, ImageResult, Rgba};
+    use ab_glyph::{PxScale, FontRef};
+    use image::{DynamicImage, ImageBuffer, Luma, Rgba};
+    use image::imageops::overlay;
     use imageproc::distance_transform::Norm;
     use imageproc::drawing::draw_text_mut;
-    use imageproc::morphology::dilate_mut;
+    use imageproc::morphology::{dilate, dilate_mut};
+
+    fn overlay_text(text: &str, img_data: &[u8]) -> Result<Vec<u8>, ConversionError> {
+        // Load the image bytes into a DynamicImage and give it an alpha channel
+        let sb_img: DynamicImage = image::load_from_memory(img_data)?;
+        let mut image = sb_img.to_rgba8();
+
+        // Load the font and give it a scale
+        let font_bytes: &[u8] = include_bytes!("../GothamBook.ttf") as &[u8];
+        let font = FontRef::try_from_slice(font_bytes)?;
+        let scale = PxScale {
+            x: image.width() as f32 * 0.10,
+            y: image.height() as f32 * 0.10,
+        };
+
+        // The width and height are needed for drawing on the canvas
+        let width_scaled = (image.width() as f32 * 0.10) as i32;
+        let height_scaled = (image.height() as f32 * 0.10) as i32;
+
+        // Draw the text onto the transparent buffer
+        let mut overlay_alpha: DynamicImage = DynamicImage::new_rgba8(image.width(), image.height() as u32);
+        draw_text_mut(
+            &mut overlay_alpha,
+            Rgba([255u8, 0u8, 0u8, 255u8]),
+            width_scaled,
+            height_scaled,
+            scale,
+            &font,
+            text,
+        );
+
+        // Get a grayscalee buffer and expand the letters by 4px
+        let mut overlay_buf = overlay_alpha.to_luma8();
+        dilate_mut(&mut overlay_buf, Norm::LInf, 4u8);
+
+        // Transfer the expanded letter pixels to the transparent buffer
+        let mut overlay_alpha_buf = overlay_alpha.to_rgba8();
+        for x in 0..overlay_buf.width() {
+            for y in 0..overlay_buf.height() {
+                let pixval = 255 - overlay_buf.get_pixel(x, y).0[0];
+                if pixval != 255 {
+                    let new_pix = Rgba([pixval, pixval, pixval, 255]);
+                    overlay_alpha_buf.put_pixel(x, y, new_pix);
+                }
+            }
+        }
+
+        // Draw the text in color on top of the black letters, giving
+        // colored letters with a black outline.
+        draw_text_mut(
+            &mut overlay_alpha_buf,
+            Rgba([255u8, 128u8, 0u8, 128u8]),
+            width_scaled,
+            height_scaled,
+            scale,
+            &font,
+            text,
+        );
+
+        // Overlay the transparent layer over the image layer
+        overlay(&mut image, &overlay_alpha_buf, 0, 0);
+
+        // Write the image buffer to a Vec<uu8> and return it to the caller.
+        let mut bytes: Vec<u8> = Vec::new();
+        image.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)?;
+        Ok(bytes)
+    }
+
+    fn overlay_text_gpt(text: &str, img_data: &[u8]) -> Result<Vec<u8>, ConversionError> {
+        let mut image = image::load_from_memory(img_data)?.to_rgba8();
+        let font_bytes = include_bytes!("../GothamBook.ttf");
+        let font = FontRef::try_from_slice(font_bytes)?;
+
+        let scale = PxScale {
+            x: image.width() as f32 * 0.1,
+            y: image.height() as f32 * 0.1,
+        };
+
+        // let scale: PxScale = PxScale::from(128.0);
+        let position = (
+            (image.width() as f32 * 0.10) as i32,
+            (image.height() as f32 * 0.10) as i32,
+        );
+
+        // Create an alpha mask for the text
+        let mut mask:ImageBuffer<Luma<u8>, Vec<u8>> = ImageBuffer::from_pixel(image.width(), image.height(), Luma([0u8]));
+        draw_text_mut(
+            &mut mask,
+            Luma([255u8]),
+            position.0,
+            position.1,
+            scale,
+            &font,
+            text,
+        );
+
+        // Dilate the mask to create an outline effect
+        let dilated_mask = dilate(&mask, Norm::LInf, 4u8);
+
+        // Convert dilated mask into an RGBA image for overlaying
+        let outline_image = ImageBuffer::from_fn(image.width(), image.height(), |x, y| {
+            let pixel = dilated_mask[(x, y)];
+            if pixel[0] > 0 && pixel[0] < 255 { // Assuming dilation creates a gradient
+                Rgba([0, 0, 0, 255]) // Black outline
+            } else {
+                Rgba([0, 0, 0, 0]) // Fully transparent
+            }
+        });
+
+        // Overlay the text directly in color
+        draw_text_mut(
+            &mut image,
+            Rgba([255, 128, 0, 255]), // Semi-transparent orange text
+            position.0,
+            position.1,
+            scale,
+            &font,
+            text,
+        );
+
+        // Overlay the outline
+        image::imageops::overlay(&mut image, &outline_image, 0, 0);
+
+        let mut bytes = Vec::new();
+        image.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)?;
+        Ok(bytes)
+    }
 
     #[allow(unused)]
     #[test]
@@ -99,67 +231,11 @@ mod tests {
         image.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)?;
 
         let image_bytes_to_write = overlay_text("WASM Test", &bytes)?;
-
-        //let output = convert_image_not_wasm(&bytes);
         std::fs::write("test.png", image_bytes_to_write)?;
-        //image::save_buffer("test.png", &bytes, w, h, ct)?;
+
+        let image_bytes_to_write = overlay_text_gpt("WASM Test", &bytes)?;
+        std::fs::write("test_gpt.png", image_bytes_to_write)?;
+
         Ok(())
     }
-
-    fn overlay_text(text: &str, img_data: &[u8]) -> ImageResult<Vec<u8>> {
-        let sb_img = image::load_from_memory(img_data).unwrap();
-
-        let mut image = sb_img.to_rgba8();
-
-        let mut overlay: DynamicImage = DynamicImage::new_luma8(image.width(), image.height());
-
-        let font_bytes: &[u8] = include_bytes!("../GothamBook.ttf") as &[u8];
-        let font = FontRef::try_from_slice(font_bytes).unwrap();
-        let scale = PxScale {
-            x: image.width() as f32 * 0.1,
-            y: image.height() as f32 * 0.1,
-        };
-
-        let x = (image.width() as f32 * 0.10) as i32;
-        let y = (image.width() as f32 * 0.10) as i32;
-
-        draw_text_mut(
-            &mut overlay,
-            Rgba([255u8, 255u8, 255u8, 255u8]),
-            x,
-            y,
-            scale,
-            &font,
-            text,
-        );
-
-        let mut image2 = overlay.to_luma8();
-        dilate_mut(&mut image2, Norm::LInf, 4u8);
-
-        for x in 0..image2.width() {
-            for y in 0..image2.height() {
-                let pixval = 255 - image2.get_pixel(x, y).0[0];
-                if pixval != 255 {
-                    let new_pix = Rgba([pixval, pixval, pixval, 255]);
-                    image.put_pixel(x, y, new_pix);
-                }
-            }
-        }
-        image2.save("test_overlay.png")?;
-
-        draw_text_mut(
-            &mut image,
-            Rgba([0u8, 128u8, 255u8, 128u8]),
-            x,
-            y,
-            scale,
-            &font,
-            text,
-        );
-
-        let mut bytes: Vec<u8> = Vec::new();
-        image.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)?;
-        Ok(bytes)
-    }
-
 }
