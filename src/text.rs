@@ -1,8 +1,30 @@
-
 use ::ab_glyph::{point, Font, FontRef, Glyph, PxScale, ScaleFont};
 
-use image::{DynamicImage, ImageBuffer, Rgba};
-use imageproc::{distance_transform::Norm, filter::{gaussian_blur_f32, sharpen_gaussian}, morphology::erode_mut};
+use image::{DynamicImage, ImageBuffer, Luma, Rgba};
+use imageproc::contrast::stretch_contrast;
+use imageproc::map::map_subpixels;
+use imageproc::{
+    contrast::stretch_contrast_mut,
+    distance_transform::Norm,
+    edges::canny,
+    filter::{gaussian_blur_f32, sharpen_gaussian},
+    morphology::erode_mut,
+};
+
+fn try_sobel(img: &mut ImageBuffer<Luma<u8>, Vec<u8>>) {
+    // Apply the Canny edge detection algorithm
+    let edges = canny(&img, 50.0, 100.0); // Lower and upper thresholds for Canny algorithm
+
+    // Convert the image to a DynamicImage for further manipulation
+    let mut binding = DynamicImage::ImageLuma8(edges);
+    let mut final_img = binding.as_mut_luma8().unwrap();
+
+    // Stretch the contrast of the image to enhance visibility
+    stretch_contrast_mut(&mut final_img, 0, 255, 0, 255);
+
+    // Save or display the processed image
+    final_img.save("test_edges_image.png").unwrap();
+}
 
 pub fn create_text_image() -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, Box<dyn std::error::Error>> {
     let font_data = include_bytes!("../GothamBook.ttf"); // Ensure the path to your font file is correct.
@@ -82,20 +104,23 @@ pub fn create_text_image() -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, Box<dyn std
     let mut tmp_back = ImageBuffer::from_pixel(800, 600, white);
     image::imageops::overlay(&mut tmp_back, &outline_image, 0, 0);
 
-    // Get a grayscalee buffer and expand the letters by 4px
+    // Get a grayscale buffer and expand the letters by 4px
     let overlay_buf = DynamicImage::from(tmp_back);
     let mut overlay_buf = overlay_buf.to_luma8();
 
     overlay_buf.save("test_b4_erode.png")?;
-    erode_mut(&mut overlay_buf, Norm::L2, 2u8);
+    erode_mut(&mut overlay_buf, Norm::L1, 3u8);
 
-    let sigma = 50.0;
-    let amount = 50.0;
-    let overlay_buf = sharpen_gaussian(&overlay_buf, sigma, amount);
+    let overlay_buf = gaussian_blur_f32(&mut overlay_buf, 0.90);
+
+    let sigma = 0.5;
+    let amount = 0.5;
+    let mut overlay_buf = sharpen_gaussian(&overlay_buf, sigma, amount);
+    try_sobel(&mut overlay_buf);
 
     // Transfer the expanded letter pixels to the transparent buffer
     let mut overlay_alpha_image = DynamicImage::ImageLuma8(overlay_buf.clone()).to_rgba8();
-    overlay_alpha_image.save("test_before.png")?;
+    overlay_alpha_image.save("test_before_invert.png")?;
     // Making all white pixels transparent
     for pixel in overlay_alpha_image.pixels_mut() {
         let Rgba(data) = *pixel;
@@ -104,10 +129,6 @@ pub fn create_text_image() -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, Box<dyn std
             *pixel = Rgba([255, 255, 255, 0]);
         }
     }
-    // Apply Gaussian blur to smooth edges
-    // `sigma` is the standard deviation of the Gaussian kernel; adjust it based on your needs
-    // let sigma = 1.9;
-    // let overlay_alpha_image = gaussian_blur_f32(&overlay_alpha_image, sigma);
 
     overlay_alpha_image.save("test_after.png")?;
 
