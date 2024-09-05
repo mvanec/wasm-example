@@ -1,5 +1,6 @@
 use ::ab_glyph::{point, Font, FontRef, Glyph, PxScale, ScaleFont};
 
+use image::imageops::unsharpen;
 use image::{DynamicImage, ImageBuffer, Luma, Rgba};
 use imageproc::contrast::stretch_contrast;
 use imageproc::map::map_subpixels;
@@ -11,19 +12,21 @@ use imageproc::{
     morphology::erode_mut,
 };
 
-fn try_sobel(img: &mut ImageBuffer<Luma<u8>, Vec<u8>>) {
-    // Apply the Canny edge detection algorithm
-    let edges = canny(&img, 50.0, 100.0); // Lower and upper thresholds for Canny algorithm
+fn try_sobel(
+    buffer: &mut ImageBuffer<Luma<u8>, Vec<u8>>,
+) -> Result<ImageBuffer<Luma<u8>, Vec<u8>>, Box<dyn std::error::Error>> {
+    erode_mut(buffer, Norm::L1, 3u8);
 
-    // Convert the image to a DynamicImage for further manipulation
-    let mut binding = DynamicImage::ImageLuma8(edges);
-    let mut final_img = binding.as_mut_luma8().unwrap();
+    let overlay_buf = gaussian_blur_f32(buffer, 0.90);
+
+    let sigma = 0.5;
+    let amount = 0.5;
+    let mut sharpened = sharpen_gaussian(&overlay_buf, sigma, amount);
 
     // Stretch the contrast of the image to enhance visibility
-    stretch_contrast_mut(&mut final_img, 0, 255, 0, 255);
+    stretch_contrast_mut(&mut sharpened, 0, 255, 0, 255);
 
-    // Save or display the processed image
-    final_img.save("test_edges_image.png").unwrap();
+    Ok(sharpened)
 }
 
 pub fn create_text_image() -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, Box<dyn std::error::Error>> {
@@ -105,36 +108,30 @@ pub fn create_text_image() -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, Box<dyn std
     image::imageops::overlay(&mut tmp_back, &outline_image, 0, 0);
 
     // Get a grayscale buffer and expand the letters by 4px
-    let overlay_buf = DynamicImage::from(tmp_back);
-    let mut overlay_buf = overlay_buf.to_luma8();
-
+    let mut overlay_buf = DynamicImage::from(tmp_back).to_luma8();
     overlay_buf.save("test_b4_erode.png")?;
-    erode_mut(&mut overlay_buf, Norm::L1, 3u8);
-
-    let overlay_buf = gaussian_blur_f32(&mut overlay_buf, 0.90);
-
-    let sigma = 0.5;
-    let amount = 0.5;
-    let mut overlay_buf = sharpen_gaussian(&overlay_buf, sigma, amount);
-    try_sobel(&mut overlay_buf);
+    let overlay_buf = try_sobel(&mut overlay_buf)?;
+    overlay_buf.save("test_af_erode.png")?;
 
     // Transfer the expanded letter pixels to the transparent buffer
-    let mut overlay_alpha_image = DynamicImage::ImageLuma8(overlay_buf.clone()).to_rgba8();
-    overlay_alpha_image.save("test_before_invert.png")?;
+    let overlay_alpha_image = DynamicImage::ImageLuma8(overlay_buf).to_rgba8();
+    let mut overlay_alpha_image = unsharpen(&overlay_alpha_image, 2.0, 128);
+    overlay_alpha_image.save("test_made_b4_transparent.png")?;
+
     // Making all white pixels transparent
     for pixel in overlay_alpha_image.pixels_mut() {
         let Rgba(data) = *pixel;
-        if data[0] == 255 && data[1] == 255 && data[2] == 255 {
+        if data[0] > 128 && data[1] > 128 && data[2] > 128 {
             // If the pixel is white, make it transparent
-            *pixel = Rgba([255, 255, 255, 0]);
+            *pixel = Rgba([0, 0, 0, 0]);
         }
     }
-
-    overlay_alpha_image.save("test_after.png")?;
+    overlay_alpha_image.save("test_made_transparent.png")?;
+    front_image.save("test_01_front_image.png")?;
 
     // Overlay the outline
+    image::imageops::overlay(&mut overlay_alpha_image, &front_image, 0, 0);
     image::imageops::overlay(&mut background, &overlay_alpha_image, 0, 0);
-    image::imageops::overlay(&mut background, &front_image, 0, 0);
 
     Ok(background)
 }
